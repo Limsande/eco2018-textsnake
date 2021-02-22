@@ -50,6 +50,9 @@ An example:
     EInsect_T017_CTS_09.05.18_000000_1_HMC-00510x00510+00000+00000.tif
 """
 
+import argparse
+import pathlib
+
 import numpy as np
 import os
 import re
@@ -59,6 +62,90 @@ import sys
 test_mode = True
 
 n_removed = 0
+
+
+def get_args_parser() -> argparse.ArgumentParser:
+    """
+    Defines and returns a parser for given command line arguments.
+    :return: argparse.ArgumentParser
+    """
+    parser = argparse.ArgumentParser(
+        description='Partition the Ecotron-EInsect-2018 dataset into training, validation, and testing sets.'
+    )
+    data_group = parser.add_argument_group('Data input')
+    data_group.add_argument(
+        '--images',
+        type=pathlib.Path,
+        required=True,
+        metavar='DIR',
+        help='directory with images'
+    )
+    data_group.add_argument(
+        '--root-masks',
+        type=pathlib.Path,
+        required=True,
+        metavar='DIR',
+        help='directory with root masks for given images'
+    )
+    data_group.add_argument(
+        '--centerline-masks',
+        type=pathlib.Path,
+        required=True,
+        metavar='DIR',
+        help='directory with center line masks for given images'
+    )
+    data_group.add_argument(
+        '--radii-maps',
+        type=pathlib.Path,
+        required=True,
+        metavar='DIR',
+        help='directory with radii maps for given images'
+    )
+    data_group.add_argument(
+        '--sin-maps',
+        type=pathlib.Path,
+        required=True,
+        metavar='DIR',
+        help='directory with sine maps for given images'
+    )
+    data_group.add_argument(
+        '--cos-maps',
+        type=pathlib.Path,
+        required=True,
+        metavar='DIR',
+        help='directory with cosine maps for given images'
+    )
+
+    split_group = parser.add_argument_group('Split control')
+    split_group.add_argument(
+        '--train-split',
+        type=int,
+        required=True,
+        metavar='INT',
+        help='percentage of data going into training set'
+    )
+    split_group.add_argument(
+        '--val-split',
+        type=int,
+        required=True,
+        metavar='INT',
+        help='percentage of data going into validation set'
+    )
+    split_group.add_argument(
+        '--test-split',
+        type=int,
+        required=True,
+        metavar='INT',
+        help='percentage of data going into test set'
+    )
+
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Only simulate the process, but don\'t actually touch anything'
+    )
+
+    return parser
 
 
 def get_crops_and_remove_from_listing(img, col, crop_x, crop_y, split, bottom=False) -> [(str, str)]:
@@ -110,16 +197,15 @@ def remove_overlaps(img, col, crop_x):
     n_removed += to_remove
 
 
-if len(sys.argv[1:]) != 5 or (len(sys.argv[1:]) == 6 and sys.argv[-1] != '--dry-run'):
-    print(__doc__)
-    sys.exit(1)
+args_parser = get_args_parser()
+args = args_parser.parse_args()
 
-percent_train = int(sys.argv[3])
-percent_test = int(sys.argv[4])
-percent_val = int(sys.argv[5])
-dry_run = len(sys.argv) == 6 or False
+args.train_split = int(sys.argv[3])
+args.train_split = int(sys.argv[4])
+args.train_split = int(sys.argv[5])
 
-assert percent_train + percent_test + percent_val == 100
+assert args.train_split + args.train_split + args.train_split == 100,\
+    f'Splits must sum up to 100: {args.train_split}, {args.val_split}, {args.test_split}'
 
 valid_file_name = re.compile(r'.*-[0-9]+x[0-9]+\+[0-9]+\+[0-9]+\.[a-zA-Z0-9_]+$')
 
@@ -140,7 +226,7 @@ n_images = len(orig_images)
 
 locations = {orig_img: {'test': [], 'validation': []} for orig_img in orig_images}
 
-if dry_run:
+if args.dry_run:
     print()
     print('== This is a dry run, no files will be moved or changed! ==')
 
@@ -151,9 +237,9 @@ Found {len(file_lists['masks'])} files in {sys.argv[2]}
 By file names, we think these are crops of {n_images} original image(s).
 
     Partitioning:
-     - training set:    {percent_train} %
-     - validation set:  {percent_val} %
-     - test set:        {percent_test} %
+     - training set:    {args.train_split} %
+     - validation set:  {args.train_split} %
+     - test set:        {args.train_split} %
 
     Splits will be created in: {os.getcwd()}
 
@@ -162,9 +248,9 @@ Ok? yes/no: """, end='')
 if input() != 'yes':
     sys.exit()
 
-percent_train /= 100
-percent_test /= 100
-percent_val /= 100
+args.train_split /= 100
+args.train_split /= 100
+args.train_split /= 100
 
 # With the original image names and the file lists we now can create
 # a mapping between them. We can later benefit from also including x
@@ -220,8 +306,8 @@ for orig_img in orig_images:
         n_rows += 1
     rows[orig_img] = n_rows
     cols[orig_img] = n_cols
-    n_cols_to_select_test[orig_img] = round(n_cols * percent_test)
-    n_cols_to_select_val[orig_img] = round(n_cols * percent_val)
+    n_cols_to_select_test[orig_img] = round(n_cols * args.train_split)
+    n_cols_to_select_val[orig_img] = round(n_cols * args.train_split)
 
 print(f"""
     Computed an average of {np.mean(list(cols.values()))} columns per image.
@@ -319,7 +405,7 @@ if test_mode:
 
 # Since the partition is done, we can move all files into their respective subdirectory.
 # This leaves the removed overlaps untouched. Fail if output directories already exist.
-if not dry_run:
+if not args.dry_run:
     for directory in ['training', 'validation', 'test']:
         try:
             os.makedirs(os.path.join(directory, 'images'))
@@ -331,7 +417,7 @@ print('Moving files...')
 counter = 0
 for split in ['training', 'validation', 'test']:
     for image, mask in partitions[split]:
-        if not dry_run:
+        if not args.dry_run:
             try:
                 shutil.move(os.path.join(image_src, image), os.path.join(split, 'images'))
                 shutil.move(os.path.join(mask_src, mask), os.path.join(split, 'masks'))
@@ -351,6 +437,6 @@ for split in ['training', 'validation', 'test']:
         counter += 2
 print(f'{counter} files moved.')
 
-if dry_run:
+if args.dry_run:
     print()
     print('== This was a dry run, nothing was actually moved. ==')
