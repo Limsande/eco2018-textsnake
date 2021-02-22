@@ -1,356 +1,746 @@
 """
-Partition the Ecotron-EInsect-2018 dataset into training, validation, and testing sets.
+Partition the Ecotron-EInsect-2018 dataset into training, validation, and
+testing sets.
 
-Usage:
-    partition.py <image-source> <mask-source> <train-split> <test-split> <val-split> [--dry-run]
+The set contains only a few minirhizotron images. This script also expects for
+each image five feature maps and masks defining the input for the TextSnake
+neural net. The maps and masks can be generated with
+https://gitlab.informatik.uni-halle.de/moeller/minirhizotron_annotation.
 
-Synopsis:
-    partition.py images masks 70 20 10
+Because the minirhizotron images are very big and wide (about 5000x700 pixels),
+they (and of course all feature maps and masks) are cropped into smaller parts
+before they are fed into the neural net.
 
-Parameter:
-    <image-source>  directory with images
-    <mask-source>  directory with corresponding masks
-    <train-split>  percentage of data going into training set
-    <test-split>  percentage of data going into test set
-    <val-split>  percentage of data goig into validation set
-    --dry-run  Only simulate the process, but don't actually touch anything
+This script partitions these crops into training, validation, and testing set.
+But this is tricky because usually these crops overlap in both x and y
+direction. We make sure that no data goes into more than one set. Because of
+the overlaps, there is no other possibility than simply ignoring some of the
+crops, i.e. do not put them in any set. The sets are moved into
+subdirectories "training", "test", and "validation".
 
-Images can overlap in both x and y direction. We make sure that no data goes into more than one split. Because of the
-overlaps, there is no other possibility than simply ignoring some of the crops, i.e. do not put them in any split. The
-splits are moved into subdirectories "training", "test", and "validation".
+We want parts of every image in all splits. The idea is to divide an image into
+three not-overlapping patches, one for each subset. The size of the validation
+and test patch is configurable via the --val-split and --test-split arguments,
+which makes the size of the training patch 1 minus the sum of these arguments.
+Crops at the patch boundaries belonging to two patches are excluded.
 
-We want parts of every image in all splits. The idea is to select <test-split> % of each image for the test split and
-<val-split> % for the validation split. We do this by computing how many not-overlapping crops fit into the origin image
-width. Since this computation is done for each image, we can perfectly deal with images of different widths.
-
-With this number we can separate an image into a number of columns. We than conceptually extend these columns to the
-full image height. For the test split we select #columns/100*<test-split> (rounded to next int) of them. All
-not-overlapping crops being *completely* in *one* of the selected columns go into the test split. We alternate starting
-to select from top to bottom. This is because otherwise, if there is only one row of not-overlapping crops, we would
-bias the upper edge.
-
-Finally, to guarantee that no part of the selected crops goes into another split because of overlaps, all crops
-overlapping the selected ones are excluded from any further selection.
-
-Additional #columns/100*<val-split> columns are selected for the validation split and processed as just described.
-
-While running this algorithm once per image, we start selecting columns from the left, moving further to the right with
-every image and go back to the left side once the right edge is reached.
-
-NOTE that this only works with origin images in landscape format which were cropped seamlessly, i.e. the crop size is a
-multiple of the offset. It is also not possible to select less than 100/#columns % of data for test and validation
-split, respectively.
-
-This script is designed to work with the output of dl_cropImages.sh. However, it should work with every input files as
-long as the file names match this format:
-    <arbitrary string>-<crop size x>x<crop size y>+<position x>+<position y>.<arbitrary file type>
-Precisely, the names must match this regular expression:
-    ^.*-[0-9]+x[0-9]+\\+[0-9]+\\+[0-9]+\\.[a-zA-Z0-9_]+$
+This script is designed to work with the output of dl_cropImages.sh. However, it
+should work with every input files as long as the file names match this format:
+    <original image file name>-<arbitrary string>+<position x>+<position y>.<arbitrary file type>
+where <original image file name> is used as hint for which crops belong to the
+same image. <position x> and <position y> denote the crop's upper left corner in
+its original image's coordinate system. Precisely, the names must match this
+regular expression:
+    .*-.*\+[0-9]+\+[0-9]+\.[a-zA-Z0-9_]+$
 An example:
-    EInsect_T017_CTS_09.05.18_000000_1_HMC-00510x00510+00000+00000.tif
+    EInsect_T017_CTS_09.05.18_000000_1_HMC-roots-00510x00510+00000+00000.tif
+However, it can be easily adapted to other file names by changing the
+VALID_FILE_NAME variable and get_metadata_from_filename function.
 """
 
-import numpy as np
+import argparse
 import os
+import pathlib
+import random
 import re
-import shutil
 import sys
-
-test_mode = True
-
-n_removed = 0
+from collections import namedtuple
 
 
-def get_crops_and_remove_from_listing(img, col, crop_x, crop_y, split, bottom=False) -> [(str, str)]:
+def get_metadata_from_filename(file_name: str) -> namedtuple:
     """
-    Get crops in <col> (0-based) of <img> (both image and mask); remove crops
-    from file listing.
+    Extract metadata like original image name and crop position from the
+    given file name. Change this function to use a different file name pattern.
     """
-
-    # We want all crops of <img> in the n.th column. We know that these have all
-    # the same x value, which is exactly n*crop_x.
-    res = []
-    if bottom:
-        max_y = max(file_mapping[img]['y'])
-        n_taken = 0
-        for i in reversed(range(len(file_mapping[img]['image']))):
-            if file_mapping[img]['x'][i] == col * crop_x and max_y - (n_taken * crop_y) == file_mapping[img]['y'][i]:
-                res.append((file_mapping[img]['image'][i], file_mapping[img]['mask'][i]))
-                locations[orig_img][split].append((file_mapping[img]['x'][i], file_mapping[img]['y'][i]))
-                for k in file_mapping[img].keys():
-                    file_mapping[img][k][i] = None
-    else:
-        for i in range(len(file_mapping[img]['image'])):
-            if file_mapping[img]['x'][i] == col*crop_x and file_mapping[img]['y'][i] % crop_y == 0:
-                res.append((file_mapping[img]['image'][i], file_mapping[img]['mask'][i]))
-                locations[orig_img][split].append((file_mapping[img]['x'][i], file_mapping[img]['y'][i]))
-                for k in file_mapping[img].keys():
-                    file_mapping[img][k][i] = None
-    for k in file_mapping[img].keys():
-        file_mapping[img][k] = [val for val in file_mapping[img][k] if val is not None]
-
-    return res
+    if os.path.isabs(f):
+        file_name = os.path.basename(file_name)
+    original_image_name = file_name.split('-')[0]
+    x_pos = int(file_name.split('.')[-2].split('+')[-2:][0])
+    Metadata = namedtuple('Metadata', ['original_image_name', 'x_pos'])
+    return Metadata(original_image_name, x_pos)
 
 
-def remove_overlaps(img, col, crop_x):
-    """
-    Remove all crops that overlap given column.
-    """
-    # Overlapping crops have an x coordinate with <col>*(crop_x -1) < x < <col>*(crop_x +1).
-    global n_removed
-    to_remove = 0
-    for i in range(len(file_mapping[img]['image'])):
-        if col * (crop_x - 1) < file_mapping[img]['x'][i] < col*(crop_x + 1):
-            for k in file_mapping[img].keys():
-                file_mapping[img][k][i] = None
-            to_remove += 1
-    for k in file_mapping[img].keys():
-        file_mapping[img][k] = [val for val in file_mapping[img][k] if val is not None]
-
-    n_removed += to_remove
-
-
-if len(sys.argv[1:]) != 5 or (len(sys.argv[1:]) == 6 and sys.argv[-1] != '--dry-run'):
-    print(__doc__)
-    sys.exit(1)
-
-percent_train = int(sys.argv[3])
-percent_test = int(sys.argv[4])
-percent_val = int(sys.argv[5])
-dry_run = len(sys.argv) == 6 or False
-
-assert percent_train + percent_test + percent_val == 100
-
-valid_file_name = re.compile(r'.*-[0-9]+x[0-9]+\+[0-9]+\+[0-9]+\.[a-zA-Z0-9_]+$')
-
-# First, we must collect all cropped images and masks files.
-image_src = sys.argv[1]
-mask_src = sys.argv[2]
-try:
-    file_lists = {'images': sorted(os.listdir(image_src)), 'masks': sorted(os.listdir(mask_src))}
-except IOError as e:
-    sys.exit(f'Could not load images: {e}')
-assert len(file_lists['images']) == len(file_lists['masks'])
-
-# We need the original image names. We can reconstruct them from
-# the cropped files, e.g.:
-#   EInsect_T017_CTS_09.05.18_000000_1_HMC-00510x00510+00000+00000.tif
-orig_images = list(np.unique([f.split('-')[0] for f in file_lists['images']]))
-n_images = len(orig_images)
-
-locations = {orig_img: {'test': [], 'validation': []} for orig_img in orig_images}
-
-if dry_run:
-    print()
-    print('== This is a dry run, no files will be moved or changed! ==')
-
-print(f"""
-Found {len(file_lists['images'])} files in {sys.argv[1]}
-Found {len(file_lists['masks'])} files in {sys.argv[2]}
-
-By file names, we think these are crops of {n_images} original image(s).
-
-    Partitioning:
-     - training set:    {percent_train} %
-     - validation set:  {percent_val} %
-     - test set:        {percent_test} %
-
-    Splits will be created in: {os.getcwd()}
-
-Ok? yes/no: """, end='')
-
-if input() != 'yes':
-    sys.exit()
-
-percent_train /= 100
-percent_test /= 100
-percent_val /= 100
-
-# With the original image names and the file lists we now can create
-# a mapping between them. We can later benefit from also including x
-# and y coordinates for each crop.
-file_mapping = {orig_img: {'image': [], 'mask': [], 'x': [], 'y': []} for orig_img in orig_images}
-for idx, img in enumerate(file_lists['images']):
-    # If a file name does not match the required format, something is probably
-    # wrong with our input. We better stop.
-    if valid_file_name.match(img) is None:
-        print(f"File name has illegal format: {img}", file=sys.stderr)
-        sys.exit('Abort.')
-    if valid_file_name.match(file_lists['masks'][idx]) is None:
-        print(f"File name has illegal format: {file_lists['masks'][idx]}", file=sys.stderr)
-        sys.exit('Abort.')
-
-    orig_name = img.split('-')[0]
-    file_mapping[orig_name]['image'].append(img)
-    x, y = [int(loc) for loc in img.split('.')[-2].split('+')[-2:]]
-    file_mapping[orig_name]['mask'].append(file_lists['masks'][idx])
-    file_mapping[orig_name]['x'].append(x)
-    file_mapping[orig_name]['y'].append(y)
-
-# We also need to know, how many columns and rows of not-overlapping crops
-# each image has. We can do this by computing how often we can, in a sorted
-# list of unique x (y) coordinates, add the crop width (height) and still
-# find an x (y) coordinate at this or a greater position.
-rows = {}
-cols = {}
-n_cols_to_select_test = {}
-n_cols_to_select_val = {}
-unique_x = {}
-unique_y = {}
-crop_x = crop_y = 0
-for orig_img in orig_images:
-    images = file_mapping[orig_img]['image']
-    u_x = np.unique(file_mapping[orig_img]['x'])
-    u_y = np.unique(file_mapping[orig_img]['y'])
-    unique_x[orig_img] = u_x
-    unique_y[orig_img] = u_y
-
-    n_rows = n_cols = 1
-    sum_x = sum_y = 0
-    # To compute the number of columns we need the size of the crop. This is also encoded
-    # in the file name:
-    #   EInsect_T017_CTS_09.05.18_000000_1_HMC-00510x00510+00000+00000.tif
-    # where 00510x00510 stands for a 510 by 510 crop.
-    crop_x, crop_y = [int(size) for size in file_mapping[orig_img]['image'][0].split('-')[-1].split('+')[0].split('x')]
-    while sum_x < u_x[-1]:
-        sum_x += crop_x
-        n_cols += 1
-    while sum_y < u_y[-1]:
-        sum_y += crop_y
-        n_rows += 1
-    rows[orig_img] = n_rows
-    cols[orig_img] = n_cols
-    n_cols_to_select_test[orig_img] = round(n_cols * percent_test)
-    n_cols_to_select_val[orig_img] = round(n_cols * percent_val)
-
-print(f"""
-    Computed an average of {np.mean(list(cols.values()))} columns per image.
-    Computed an average of {np.mean(list(rows.values()))} rows per image.
-    Will select {np.mean(list(n_cols_to_select_test.values()))} test columns on average.
-    Will select {np.mean(list(n_cols_to_select_val.values()))} validation columns on average.
-
-Go on? yes/no:""", end=' ')
-if input() != 'yes':
-    sys.exit()
-
-# We're ready to start the partitioning: Loop over the original images and select
-# the appropriate number of columns for test and validation split with an increasing
-# offset. Then remove each overlapping crop from the file listing. Finally all
-# remaining crops go into the training set.
-print('Partitioning...')
-partitions = {'training': [], 'test': [], 'validation': []}
-offset = 0
-for i, orig_img in enumerate(orig_images):
-    # Test V
-    # |X|X|O| | | | | | | |
-    # |X|X| | | | | | | | |
-    # ------   Training
-
-    #         Test V
-    # | | | | |X|X|O| | | |
-    # Training ----- Train
-
-    print(f"    Working with {orig_img} (image {i+1}/{len(orig_images)})...")
-
-    # Reset offset to 0, if we've reached the right edge.
-    if cols[orig_img] - offset < n_cols_to_select_test[orig_img] + n_cols_to_select_val[orig_img]:
-        # 4 cols, want 2+1, offset 2
-        #  0 1 2 3
-        # | | |X|X|
-        #      ^
-        # 4 - 2 < 2+1 --> offset = 0
-        offset = 0
-
-    # Collect crops for test set
-    local_offset = 0
-    selected_cols = []
-    bottom = False
-    for col in range(n_cols_to_select_test[orig_img]):
-        selected_cols.append(col + offset)
-        partitions['test'].extend(get_crops_and_remove_from_listing(orig_img, col + offset + local_offset, crop_x, crop_y, 'test', bottom))
-        bottom = not bottom
-    # Collect crops for validation set
-    for col in range(n_cols_to_select_val[orig_img]):
-        selected_cols.append(col + offset + n_cols_to_select_val[orig_img])
-        partitions['validation'].extend(get_crops_and_remove_from_listing(orig_img, col + offset + n_cols_to_select_test[orig_img], crop_x, crop_y, 'validation', bottom))
-        local_offset += 1
-        bottom = not bottom
-    offset += 1
-
-    # Now all crops overlapping col <col> have to be removed.
-    for col in selected_cols:
-        remove_overlaps(orig_img, col, crop_x)
-
-# All remaining files go into training set.
-partitions['training'] = [(img, mask) for val in file_mapping.values() for img, mask in zip(val['image'], val['mask'])]
-
-print(f"""
-    Partitions:
-     - training set:    {len(partitions['training'])} images
-     - validation set:  {len(partitions['validation'])} images
-     - test set:        {len(partitions['test'])} images
-
-    Excluded because of overlaps: {n_removed}
-""")
-
-if test_mode:
-    print('Files in test set:')
-    for img, mask in partitions['test']:
-        print('  ', img, mask)
-    print('Files in validation set:')
-    for img, mask in partitions['validation']:
-        print('  ', img, mask)
+def visualize_selection(image_list, selected_locations):
+    if not args.dry_run:
+        if not os.path.isdir('./vis'):
+            try:
+                os.mkdir('./vis')
+            except IOError as e:
+                print(f'\nCould not create visualization directory: {e}. Skipping.', file=sys.stderr)
+                return
 
     import matplotlib.pyplot as plt
-    from matplotlib.patches import Rectangle
+    from matplotlib.patches import Rectangle, Patch
 
-    for orig_img in orig_images:
+    for img in image_list.keys():
+        # todo get image width and height
+        img_height = 710
+
         fig, ax = plt.subplots(1)
+
+        # FIXME
+        # plt.title(img)
+
+        plt.axis('scaled')
         plt.xlim(0, 5000)
-        plt.ylim(0, 710)
-        for loc in locations[orig_img]['test']:
-            ax.add_patch(Rectangle((float(loc[0]), float(loc[1])), width=510, height=510, fill=False, color='red', label='test'))
-        for loc in locations[orig_img]['validation']:
-            ax.add_patch(Rectangle((float(loc[0]), float(loc[1])), width=510, height=510, fill=False, color='blue', label='validation'))
-        fig.legend()
-        #plt.show()
-        fig.savefig(f'{orig_img}_selection.png')
-    sys.exit()
+        plt.ylim(0, img_height)
+        plt.gca().invert_yaxis()
+        ax.xaxis.tick_top()
+        ax.xaxis.set_label_position('top')
+        plt.xlabel('x')
+        plt.ylabel('y')
 
-# Since the partition is done, we can move all files into their respective subdirectory.
-# This leaves the removed overlaps untouched. Fail if output directories already exist.
-if not dry_run:
-    for directory in ['training', 'validation', 'test']:
-        try:
-            os.makedirs(os.path.join(directory, 'images'))
-            os.makedirs(os.path.join(directory, 'masks'))
-        except IOError as e:
-            sys.exit(e)
+        for x in selected_locations[img]['test']:
+            ax.add_patch(Rectangle(
+                (x, 0),
+                width=args.crop_width,
+                height=img_height,
+                fill=True,
+                color='orange',
+                label='test'
+            ))
+        for x in selected_locations[img]['validation']:
+            ax.add_patch(Rectangle(
+                (x, 0),
+                width=args.crop_width,
+                height=img_height,
+                fill=True,
+                color='blue',
+                label='validation'
+            ))
+        for x in selected_locations[img]['training']:
+            ax.add_patch(Rectangle(
+                (x, 0),
+                width=args.crop_width,
+                height=img_height,
+                fill=True,
+                color='green',
+                label='training'
+            ))
+        fig.legend(
+            handles=[
+                Patch(color='green', label='Training'),
+                Patch(color='blue', label='Validation'),
+                Patch(color='orange', label='Test')
+            ]
+        )
 
-print('Moving files...')
-counter = 0
-for split in ['training', 'validation', 'test']:
-    for image, mask in partitions[split]:
-        if not dry_run:
+        if args.dry_run:
+            plt.show()
+        else:
             try:
-                shutil.move(os.path.join(image_src, image), os.path.join(split, 'images'))
-                shutil.move(os.path.join(mask_src, mask), os.path.join(split, 'masks'))
+                fig.savefig(f'./vis/{img}_selection.png')
             except IOError as e:
-                print(f'ERROR: {e}', file=sys.stderr)
-                print('Moving files back...', file=sys.stderr)
-                # Clean up: move everything back
-                for split in ['training', 'validation', 'test']:
-                    for image in os.listdir(os.path.join(split, 'images')):
-                        shutil.move(os.path.join(split, 'images', image), image_src)
-                    for mask in os.listdir(os.path.join(split, 'masks')):
-                        shutil.move(os.path.join(split, 'masks', mask), mask_src)
-                for directory in ['training', 'validation', 'test']:
-                    shutil.rmtree(directory)
-                print('Done.', file=sys.stderr)
-                sys.exit(1)
-        counter += 2
-print(f'{counter} files moved.')
+                print(f'\nCould not save visualization: {e}. Skipping.', file=sys.stderr)
+                return
 
-if dry_run:
-    print()
-    print('== This was a dry run, nothing was actually moved. ==')
+    if not args.dry_run:
+        print('\nSaved visualization in ./vis')
+
+
+class Image:
+    """
+    Represents a complete minirhizotron image. An instance consists of several
+    columns of possibly vertically and horizontally overlapping crops. A
+    column holds all crops with the same unique position on the horizontal (x)
+    axis. A column contains crops of all feature maps and masks, so conceptually
+    an instance of this class is a multi-channel image composed of several
+    one-channel images of the same scene.
+    """
+
+    def __init__(self, name, col_width, valid_file_name_regex):
+        self.name = name
+        self.col_width = col_width
+        self.n_cols = 0
+
+        self._valid_file_name_regex = valid_file_name_regex
+
+        # We map each x position to its column for easy access. We also keep a
+        # sorted index for iteration in correct order.
+        self._cols = {}
+        self._x_positions = []
+
+        self._moved_cols = []
+
+    def insert(self, file_path: str, annot_type: str) -> None:
+        """
+        Insert the crop represented by file_name into this image.
+        :raises ValueError: if file_path has an illegal format, see __doc__
+        """
+        if self._valid_file_name_regex.match(os.path.basename(file_path)) is None:
+            raise ValueError(f'Illegal file name: {os.path.basename(file_path)}')
+        x_pos = get_metadata_from_filename(file_path).x_pos
+        if x_pos in self._x_positions:
+            col = self._cols[x_pos]
+        else:
+            col = Column()
+            self._x_positions.append(x_pos)
+            self._x_positions.sort()
+        col.insert(Crop(file_path, annot_type))
+        self._cols[x_pos] = col
+
+        self.n_cols = len(self._cols)
+
+    # def validate_columns(self) -> bool:
+    #     """
+    #     Check if all columns are valid (see Column.validate).
+    #     """
+    #     for col in self._cols.values():
+    #         if not all(col.validate()):
+    #             return False
+    #     return True
+    #
+    # def get_invalid_columns(self) -> {int: [str]}:
+    #     """
+    #     Return invalid columns as a dict of pairs (xpos -> [reasons]).
+    #     :rtype: {int: [str]}
+    #     """
+    #     invalid_columns = {}
+    #     for xpos, col in self._cols:
+    #         all_annotations_present, file_counts_do_match = col.validate()
+    #         if not all_annotations_present:
+    #             invalid_columns[xpos] = ['reason']
+    #         if not file_counts_do_match:
+    #             invalid_columns[xpos].append('reason')
+    #     return invalid_columns
+    #
+    # def validate_file_count(self):
+    #     pass
+    #
+    # def get_file_counts(self):
+    #     pass
+    #
+    # def validate_horizontal_alignment(self):
+    #     pass
+    #
+    # def get_horizontal_alignment(self):
+    #     pass
+    #
+    # def validate(self) -> (bool, bool, bool):
+    #     """
+    #     Validate this image. Image is valid if
+    #         - all columns are valid
+    #         - all columns have the same number of files
+    #         - columns can be aligned without gaps using their knwon horizontal position and width
+    #     :return: (bool, bool, bool):
+    #     """
+    #     columns_are_valid = True
+    #     for x_pos, col in self._cols.items():
+    #         if not col.validate(): pass
+    #
+    #     sorted_xpos = sorted(self._cols.keys())
+    #     columns_do_line_up = True
+    #     for i in range(len(sorted_xpos) - 1):
+    #         columns_do_line_up = sorted_xpos[i] == sorted_xpos[i+1] + self.col_width
+    #
+    #     return False
+
+    def select_randomly(self, val_split: float, test_split: float) -> {str: int}:
+        """
+        Randomly divide this image into training, validation and test split.
+
+        The image is divided into three randomly ordered consecutive patches.
+        The fractions of the image going into each patch are given by
+        val_split, test_split, and 1 - (val_split + test_split), respectively.
+        Columns in which the patches overlap are removed.
+
+        :return dict with number of selected crops (keys 'training',
+            'validation', 'test', 'ignore')
+        """
+
+        def _select(start, n, label) -> int:
+            """
+            Label all columns in [start, start+n) with label.
+            """
+            n_selected = 0
+            interval = [i % self.n_cols for i in range(start, start + n)]
+            for i in interval:
+                x = self._x_positions[i]
+                n_selected += self._cols[x].mark_as(label)
+            return n_selected
+
+        def _remove_overlaps(start, end) -> int:
+            """
+            Remove unlabelled columns in [start-col_width, end+col_width].
+            """
+            start = self._x_positions[start % self.n_cols]
+            end = self._x_positions[end % self.n_cols]
+            n_removed = 0
+            for x, col in self._cols.items():
+                if start - self.col_width <= x <= start or end <= x <= end + self.col_width:
+                    if col.label is None:
+                        n_removed += col.mark_as('ignore')
+            return n_removed
+
+        def _next_unlabelled_col(x):
+            """
+            Return index of first unlabelled column after x.
+            """
+            for i in range(self.n_cols):
+                idx = (x + i) % self.n_cols
+                x_current = self._x_positions[idx]
+                if self._cols[x_current].label is None:
+                    return idx
+
+        # When computing number of columns per split we must take into account
+        # that some columns will be removed, i.e. we want to compute the split
+        # sizes as fraction of the number of actual selected columns, not of
+        # the total number of columns.
+        delta_x = self._x_positions[1] - self._x_positions[0]
+        removed_per_split = self.col_width / delta_x
+        # * 2 because 2 gaps between 3 splits
+        n_val = round((self.n_cols - removed_per_split * 2) * val_split)
+        n_test = round((self.n_cols - removed_per_split * 2) * test_split)
+        n_train = round((self.n_cols - removed_per_split * 2) * (1 - val_split - test_split))
+
+        # Start splitting with a random column
+        #start = random.randint(0, len(self._cols) -1)
+        start = 0
+
+        stats = dict.fromkeys(['training', 'validation', 'test', 'ignore'], 0)
+
+        # Place patches in arbitrary order
+        for n, label in random.sample(list(zip([n_train, n_val, n_test], ['training', 'validation', 'test'])), k=3):
+            # Mark patch
+            stats[label] += _select(start, n, label)
+            # Remove columns overlapping this patch
+            stats['ignore'] += _remove_overlaps(start, start + n - 1)
+            # Next patch starts at next unlabelled column
+            start = _next_unlabelled_col(start)
+
+        return stats
+
+    def get_labels(self) -> {int: str}:
+        """
+        Return a mapping of column positions and labels.
+        """
+        return {x: col.label for x, col in self._cols.items()}
+
+    def to_disk(self, dry_run: bool) -> int:
+        """
+        Move all files of this image to the output directories defined by each
+        column's label. Returns number of files moved.
+        :param dry_run: Do not actually move files.
+        :raises IOError: if an error occurs while moving the files
+        """
+        file_counter = 0
+        for k, col in self._cols.items():
+            self._moved_cols.append(k)
+            file_counter += col.move(dry_run=dry_run)
+        return file_counter
+
+    def rollback(self) -> None:
+        """
+        Undo all former file movements.
+        :raises IOError: if an error occurs while moving the files
+        """
+        for k in self._moved_cols:
+            self._cols[k].move_back()
+
+
+class Crop:
+    """
+    A crop is a portion of an image. The crop resides as actual image file
+    somewhere on disk.
+    """
+
+    def __init__(self, file_path, annot_type):
+        self._file_path = file_path
+        self.annot_type = annot_type
+        self._file_was_moved = False
+        self._new_path = None
+
+    def move_to(self, path: str) -> None:
+        """
+        Move the file associated with this crop to the directory
+        path/annot_type, where annot_type is this crop's annotation type.
+        :raises IOError: if an error occurs while moving the file
+        """
+        self._new_path = os.path.join(path, self.annot_type, os.path.basename(self._file_path))
+        os.rename(self._file_path, self._new_path)
+        self._file_was_moved = True
+
+    def move_back(self) -> None:
+        """
+        Undo a former file movement by moving the file back to its origin.
+        :raises IOError: if an error occurs while moving the file
+        """
+        if self._file_was_moved:
+            os.rename(self._new_path, self._file_path)
+            pass
+
+
+class Column:
+    """
+    A Column is a collection of vertically aligned crops, which can also overlap
+    vertically. It is a collection of all crops with the same horizontal
+    position from the actual minirhizotron image as well as from its feature
+    maps and masks.
+    """
+    def __init__(self):
+        self._content = []
+        self._file_counts = {}
+        self.label = None
+
+    def insert(self, item: Crop) -> None:
+        """
+        Insert the Crop into this column.
+        """
+        self._content.append(item)
+        self._file_counts[item.annot_type] = self._file_counts.get(item.annot_type, 0) + 1
+
+    def mark_as(self, label: str) -> int:
+        """
+        Mark this column with the provided label. Returns number of labelled
+        crops.
+        """
+        self.label = label
+        return len(self._content) // len(ANNOTATIONS)
+
+    def move(self, dry_run: bool) -> int:
+        """
+        Move all files of this column to the corresponding directory, if this
+        column is not labeled to be ignored. Returns number of files moved.
+        :param dry_run: Do not actually move files.
+        :raises IOError: if an error occurs while moving the files
+        """
+        if self.label == 'ignore':
+            return 0
+
+        file_counter = 0
+        for crop in self._content:
+            if not dry_run:
+                crop.move_to(self.label)
+            file_counter += 1
+
+        return file_counter
+
+    # def validate(self) -> (bool, bool):
+    #     """
+    #     Check if this column is complete, i.e. all types of annotations (see ANNOTATIONS) are present, and each have the
+    #     same number of files registered.
+    #     :return: (bool, bool): whether all annotation types are present, and whether all hold the same number of files
+    #     """
+    #     all_annotations_present = all(a in list(self._file_counts.keys()) for a in ANNOTATIONS)
+    #     file_counts_do_match = all(n == list(self._file_counts.values())[0] for n in self._file_counts.values())
+    #     return all_annotations_present, file_counts_do_match
+
+    def move_back(self) -> None:
+        """
+        Undo all former file movements.
+        :raises IOError: if an error occurs while moving the files
+        """
+        if self.label == 'ignore':
+            return
+
+        for crop in self._content:
+            crop.move_back()
+
+
+def get_args_parser() -> argparse.ArgumentParser:
+    """
+    Defines and returns a parser for given command line arguments.
+    :return: argparse.ArgumentParser
+    """
+    parser = argparse.ArgumentParser(
+        description='Partition the Ecotron-EInsect-2018 dataset into training, validation, and testing sets.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    data_group = parser.add_argument_group('Data input')
+    data_group.add_argument(
+        '--images',
+        type=pathlib.Path,
+        required=True,
+        metavar='DIR',
+        help='directory with images'
+    )
+    data_group.add_argument(
+        '--roots',
+        type=pathlib.Path,
+        required=True,
+        metavar='DIR',
+        help='directory with root masks for given images'
+    )
+    data_group.add_argument(
+        '--centerlines',
+        type=pathlib.Path,
+        required=True,
+        metavar='DIR',
+        help='directory with center line masks for given images'
+    )
+    data_group.add_argument(
+        '--radii',
+        type=pathlib.Path,
+        required=True,
+        metavar='DIR',
+        help='directory with radii maps for given images'
+    )
+    data_group.add_argument(
+        '--sin',
+        type=pathlib.Path,
+        required=True,
+        metavar='DIR',
+        help='directory with sine maps for given images'
+    )
+    data_group.add_argument(
+        '--cos',
+        type=pathlib.Path,
+        required=True,
+        metavar='DIR',
+        help='directory with cosine maps for given images'
+    )
+    data_group.add_argument(
+        '--crop-width',
+        type=int,
+        required=True,
+        metavar='INT',
+        help='crop width'
+    )
+
+    split_group = parser.add_argument_group('Split control')
+    split_group.add_argument(
+        '--val-split',
+        type=int,
+        required=True,
+        metavar='INT',
+        help='percentage of data going into validation set'
+    )
+    split_group.add_argument(
+        '--test-split',
+        type=int,
+        required=True,
+        metavar='INT',
+        help='percentage of data going into test set'
+    )
+
+    parser.add_argument(
+        '-y', '--yes',
+        action='store_true',
+        help='Assume answer "yes" for all questions'
+    )
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Only simulate the process, don\'t actually touch anything'
+    )
+    parser.add_argument(
+        '--vis',
+        action='store_true',
+        help='Create visualization of selection in ./vis'
+    )
+    parser.add_argument(
+        '-r', '--random-seed',
+        metavar='INT',
+        type=int,
+        help='Seed for the random number generator'
+    )
+
+    return parser
+
+
+# This is used to verify all file names encountered in the given input
+# directories. Change the pattern to match different file names.
+VALID_FILE_NAME = re.compile(r'.*-.*\+[0-9]+\+[0-9]+\.[a-zA-Z0-9_]+$')
+
+ANNOTATIONS = ['images', 'roots', 'centerlines', 'radii', 'sin', 'cos']
+
+args_parser = get_args_parser()
+args = args_parser.parse_args()
+
+if args.val_split + args.test_split > 100:
+    sys.exit(f'ERROR: Requested splits to large (expected sum<100): validation: {args.val_split}, test:{args.test_split}')
+
+if args.random_seed:
+    random.seed(args.random_seed)
+
+if args.dry_run:
+    print('\n=== This is a dry run, no files will be moved or changed! ===\n')
+
+# Create a list of Image instances, each holding all its crops. The Images
+# provide methods to split each individually into training, test, and
+# validation set.
+print('Listing files and assembling images...\n')
+image_list = {}
+
+# only for sanity check
+file_list_lengths = []
+
+for annot_type in ANNOTATIONS:
+    try:
+        # resolve() to absolut file path to easily keep track of
+        # where each file came from. We need this in case of
+        # rollback caused by an error while moving files at the end
+        # of this script.
+        with os.scandir(vars(args)[annot_type].resolve()) as file_list:
+            file_list = list(file_list)
+            file_list_lengths.append(len(file_list))
+            print(f'  {vars(args)[annot_type]}: {len(file_list)} files')
+
+            # Image assembly
+            for f in file_list:
+                f = f.path  # f is os.DirEntry
+                original_image_name = get_metadata_from_filename(file_name=f).original_image_name
+                img = image_list.get(
+                    original_image_name,
+                    Image(
+                        name=original_image_name,
+                        col_width=args.crop_width,
+                        valid_file_name_regex=VALID_FILE_NAME
+                    )
+                )
+                try:
+                    img.insert(file_path=f, annot_type=annot_type)
+                except ValueError as e:
+                    # If a file name does not match the required format,
+                    # something is probably wrong with our input. We better
+                    # stop.
+                    sys.exit(f'ERROR: {e}. Abort.')
+                image_list[original_image_name] = img
+    except IOError as e:
+        sys.exit(f'ERROR: Could not load images: {e}')
+
+if not all(n == file_list_lengths[0] for n in file_list_lengths):
+    sys.exit('ERROR: No. of files do not match!')
+
+# print('Validating images...')
+# everything_valid = True
+# for name, img in image_list.items():
+#     print(f'  {name}... ', end='')
+#     columns_are_valid = img.validate_columns()
+#     file_count_is_valid = img.validate_file_count()
+#     horizontal_alignment_is_valid = img.validate_horizontal_alignment()
+#     if columns_are_valid and file_count_is_valid and horizontal_alignment_is_valid:
+#         print('ok')
+#     else:
+#         print('NOT OK')
+#         everything_valid = False
+#         if not columns_are_valid:
+#             for col, reason in img.get_invalid_columns():
+#                 print(f'  Column {col}: {reason}')
+#         if not file_count_is_valid:
+#             print(f'  Number of annotation files differ:')
+#             for col, count in img.get_file_counts():
+#                 print(f'    Column {col}: {count} files')
+#         if not horizontal_alignment_is_valid:
+#             print(f'  Columns do not horizontally align (width: {img.col_width}):')
+#             for col, xpos in img.get_horizontal_alignment():
+#                 print(f'    Column {col} starts at {xpos}')
+#
+# if not everything_valid:
+#     sys.exit(
+#         f'ERROR: Could not assemble images properly! Are files missing?'
+#         f'Is the crop width {args.crop_width} correct?'
+#     )
+
+print(
+    f'\n  Found {len(image_list)} image(s):',
+    '    ' + '\n '.join(list(image_list.keys())),
+    '\nPartitioning:',
+    f'  - training set:    {100 - args.val_split - args.test_split} %',
+    f'  - validation set:  {args.val_split} %',
+    f'  - test set:        {args.test_split} %\n',
+    f'Directories for splits will be created in: {os.getcwd()}\n'
+    'Ok? yes/no: ',
+    sep='\n',
+    end=''
+)
+
+if not args.yes:
+    if input() != 'yes':
+        sys.exit()
+else:
+    print('yes')
+
+# Prepare output directories.
+if not args.dry_run:
+    for directory in ['training', 'validation', 'test']:
+        if not os.path.isdir(directory):
+            for dd in ANNOTATIONS:
+                try:
+                    os.makedirs(os.path.join(directory, dd))
+                except IOError as e:
+                    sys.exit(e)
+        elif os.listdir(directory) is not []:
+            sys.exit(f'Directory ./{directory} exists and is not empty! Abort.')
+
+val_split = args.val_split / 100
+test_split = args.test_split / 100
+
+print('\nSplitting into sets...')
+
+# Keep track of selected crop locations for visualisation
+selected_locations = {
+    orig_img: {
+        'training': [],
+        'test': [],
+        'validation': [],
+        'ignore': []
+    } for orig_img in image_list.keys()}
+
+stats = dict.fromkeys(['training', 'validation', 'test', 'ignore'], 0)
+for img_name, img in image_list.items():
+    current_stats = img.select_randomly(val_split=val_split, test_split=test_split)
+    for k in stats.keys():
+        stats[k] += current_stats[k]
+    labels = img.get_labels()
+    for x, label in labels.items():
+        selected_locations[img_name][label].append(x)
+
+n_crops_total = sum(stats.values())
+n_crops_selected = n_crops_total - stats['ignore']
+print(
+    f'\n  Crops total:        {n_crops_total}',
+    f'  Removed because of overlaps: {stats["ignore"]}',
+    f'\n  Partitioning:',
+    f'    - training set:   {stats["training"]}/{n_crops_selected} crops '
+    f'({round(stats["training"]/n_crops_selected * 100, 1)} %)',
+    f'    - validation set: {stats["validation"]}/{n_crops_selected} crops '
+    f'({round(stats["validation"] / n_crops_selected * 100, 1)} %)',
+    f'    - test set:       {stats["test"]}/{n_crops_selected} crops '
+    f'({round(stats["test"] / n_crops_selected * 100, 1)} %)',
+    '\nShould I move the files now? yes/no: ',
+    sep='\n',
+    end=''
+)
+
+if not args.yes:
+    if input() != 'yes':
+        sys.exit()
+else:
+    print('yes')
+
+# Since the partition is done, we can move all files into their respective
+# subdirectory. This leaves the removed overlaps untouched.
+print(f'\nMoving files (each crop contains {len(ANNOTATIONS)} files)...')
+file_counter = 0
+for img in image_list.values():
+    try:
+        file_counter += img.to_disk(dry_run=args.dry_run)
+    except IOError as e:
+        for img in image_list.values():
+            try:
+                img.rollback()
+            except IOError as e:
+                sys.exit('ERROR: {e}')
+print(f'{file_counter} files moved.')
+print(
+    'This can be undone with (in Bash):',
+    '  declare -A dirs',
+    f'  dirs=([images]="{args.images}" [roots]="{args.roots}" '
+    f'[centerlines]="{args.centerlines}" [radii]="{args.radii}" '
+    f'[sin]="{args.sin}" [cos]="{args.cos}")',
+    '  for split in "training" "test" "validation"; do',
+    '    for d in ${!dirs[*]}; do',
+    '      mv $split/$d/* "${dirs[$d]}" && rmdir "$split/$d/"',
+    '    done && rmdir $split',
+    '  done',
+    sep='\n'
+)
+
+# Visualize selection if requested.
+if args.vis:
+    visualize_selection(image_list, selected_locations)
+
+if args.dry_run:
+    print('\n== This was a dry run, nothing was actually moved. ==')
