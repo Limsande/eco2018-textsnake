@@ -216,24 +216,45 @@ class Image:
     # def get_horizontal_alignment(self):
     #     pass
     #
-    # def validate(self) -> (bool, bool, bool):
-    #     """
-    #     Validate this image. Image is valid if
-    #         - all columns are valid
-    #         - all columns have the same number of files
-    #         - columns can be aligned without gaps using their knwon horizontal position and width
-    #     :return: (bool, bool, bool):
-    #     """
-    #     columns_are_valid = True
-    #     for x_pos, col in self._cols.items():
-    #         if not col.validate(): pass
-    #
-    #     sorted_xpos = sorted(self._cols.keys())
-    #     columns_do_line_up = True
-    #     for i in range(len(sorted_xpos) - 1):
-    #         columns_do_line_up = sorted_xpos[i] == sorted_xpos[i+1] + self.col_width
-    #
-    #     return False
+    def validate(self):
+        """
+        print('Validating images...')
+        for img in images:
+            print(f'  {img}...', end=' ')
+            check_results = img.validate()
+            if check_results is not None:
+                print('NOT OK!')
+                for error, reason in check_results:
+                    # e.g. ERROR: columns differ in height:
+                    switch(error):
+                        case 1: # cols differ in height
+                            print(f'    ERROR: columns differ in height:')
+                            for col in img.cols:
+                                print(f'      {col}: {col.height}'}
+                        case 2: # col invalid
+                            print(f'    ERROR: column invalid: {reason}')
+            else:
+                print('ok')
+
+        Validate this image. Image is valid if
+            - all columns have the same number of files
+            - all columns are valid
+            - columns can be aligned without gaps using their known horizontal
+              position and width
+        """
+        check_results = []
+        img_height = self._cols.popitem()
+        for x_pos in self._x_positions:
+            # todo implement Column.height
+            if not self._cols[x_pos].height == img_height:
+                check_results.append((ERROR_CODES['cols differ in height']),)
+                break
+
+        for i in range(1, len(self._x_positions)):
+            if self._x_positions[i] != self._x_positions[i - 1] + self.col_width:
+                check_results.append((ERROR_CODES['cols do not line up'], ))
+
+        return check_results or None
 
     def select_randomly(self, val_split: float, test_split: float) -> {str: int}:
         """
@@ -415,15 +436,13 @@ class Column:
 
         return file_counter
 
-    # def validate(self) -> (bool, bool):
-    #     """
-    #     Check if this column is complete, i.e. all types of annotations (see ANNOTATIONS) are present, and each have the
-    #     same number of files registered.
-    #     :return: (bool, bool): whether all annotation types are present, and whether all hold the same number of files
-    #     """
-    #     all_annotations_present = all(a in list(self._file_counts.keys()) for a in ANNOTATIONS)
-    #     file_counts_do_match = all(n == list(self._file_counts.values())[0] for n in self._file_counts.values())
-    #     return all_annotations_present, file_counts_do_match
+    def validate(self):
+        """
+        Check if this column is complete, i.e. each crop has all its files registered.
+        """
+        all_annotations_present = all(a in list(self._file_counts.keys()) for a in ANNOTATIONS)
+        file_counts_do_match = all(n == list(self._file_counts.values())[0] for n in self._file_counts.values())
+        return all_annotations_present, file_counts_do_match
 
     def move_back(self) -> None:
         """
@@ -535,6 +554,11 @@ def get_args_parser() -> argparse.ArgumentParser:
         type=int,
         help='Seed for the random number generator'
     )
+    parser.add_argument(
+        '--validate',
+        action='store_true',
+        help='Check images for integrity before processing'
+    )
 
     return parser
 
@@ -544,6 +568,10 @@ def get_args_parser() -> argparse.ArgumentParser:
 VALID_FILE_NAME = re.compile(r'.*-.*\+[0-9]+\+[0-9]+\.[a-zA-Z0-9_]+$')
 
 ANNOTATIONS = ['images', 'roots', 'centerlines', 'radii', 'sin', 'cos']
+ERROR_CODES = {
+    'cols differ in height': 1,
+    'cols do not line up': 2
+}
 
 args_parser = get_args_parser()
 args = args_parser.parse_args()
