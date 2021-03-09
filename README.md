@@ -3,7 +3,25 @@
 See also the [TextSnake](https://link.springer.com/chapter/10.1007/978-3-030-01216-8_2) publication.
 
 ## Installation and usage
-The script runs out of the box, no setup required:
+The scripts runs out of the box, no setup required.
+
+### `img_mean_and_std.py`
+```bash
+$ python3 data_mean_and_std.py 
+
+Compute RGB channel-wise mean and std of given images.
+
+Usage:
+    img_mean_and_std.py IMG...
+```
+
+Output for first four time frames of T17, T19, T20, T21, T23 and T24:
+```
+Mean: 77.12583122033104 69.66186087747802 65.88590173118982
+Std: 9.664289791969221 8.175145880877395 7.81001608502447
+```
+
+### `partition.py`
 ```bash
 $ python partition.py --help
 usage: partition.py [-h] --images DIR --roots DIR --centerlines DIR --radii DIR --sin DIR --cos DIR --crop-width INT --val-split
