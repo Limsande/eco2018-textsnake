@@ -205,60 +205,6 @@ class Image:
 
         self.n_cols = len(self._cols)
 
-    # def validate_columns(self) -> bool:
-    #     """
-    #     Check if all columns are valid (see Column.validate).
-    #     """
-    #     for col in self._cols.values():
-    #         if not all(col.validate()):
-    #             return False
-    #     return True
-    #
-    # def get_invalid_columns(self) -> {int: [str]}:
-    #     """
-    #     Return invalid columns as a dict of pairs (xpos -> [reasons]).
-    #     :rtype: {int: [str]}
-    #     """
-    #     invalid_columns = {}
-    #     for xpos, col in self._cols:
-    #         all_annotations_present, file_counts_do_match = col.validate()
-    #         if not all_annotations_present:
-    #             invalid_columns[xpos] = ['reason']
-    #         if not file_counts_do_match:
-    #             invalid_columns[xpos].append('reason')
-    #     return invalid_columns
-    #
-    # def validate_file_count(self):
-    #     pass
-    #
-    # def get_file_counts(self):
-    #     pass
-    #
-    # def validate_horizontal_alignment(self):
-    #     pass
-    #
-    # def get_horizontal_alignment(self):
-    #     pass
-    #
-    # def validate(self) -> (bool, bool, bool):
-    #     """
-    #     Validate this image. Image is valid if
-    #         - all columns are valid
-    #         - all columns have the same number of files
-    #         - columns can be aligned without gaps using their knwon horizontal position and width
-    #     :return: (bool, bool, bool):
-    #     """
-    #     columns_are_valid = True
-    #     for x_pos, col in self._cols.items():
-    #         if not col.validate(): pass
-    #
-    #     sorted_xpos = sorted(self._cols.keys())
-    #     columns_do_line_up = True
-    #     for i in range(len(sorted_xpos) - 1):
-    #         columns_do_line_up = sorted_xpos[i] == sorted_xpos[i+1] + self.col_width
-    #
-    #     return False
-
     def select_randomly(self, val_split: float, test_split: float) -> {str: int}:
         """
         Randomly divide this image into training, validation and test split.
@@ -317,13 +263,10 @@ class Image:
         n_test = round((self.n_cols - removed_per_split * 2) * test_split)
         n_train = round((self.n_cols - removed_per_split * 2) * (1 - val_split - test_split))
 
-        # Start splitting with a random column
-        #start = random.randint(0, len(self._cols) -1)
-        start = 0
-
         stats = dict.fromkeys(['training', 'validation', 'test', 'ignore'], 0)
 
         # Place patches in arbitrary order
+        start = 0
         for n, label in random.sample(list(zip([n_train, n_val, n_test], ['training', 'validation', 'test'])), k=3):
             # Mark patch
             stats[label] += _select(start, n, label)
@@ -438,16 +381,6 @@ class Column:
             file_counter += 1
 
         return file_counter
-
-    # def validate(self) -> (bool, bool):
-    #     """
-    #     Check if this column is complete, i.e. all types of annotations (see ANNOTATIONS) are present, and each have the
-    #     same number of files registered.
-    #     :return: (bool, bool): whether all annotation types are present, and whether all hold the same number of files
-    #     """
-    #     all_annotations_present = all(a in list(self._file_counts.keys()) for a in ANNOTATIONS)
-    #     file_counts_do_match = all(n == list(self._file_counts.values())[0] for n in self._file_counts.values())
-    #     return all_annotations_present, file_counts_do_match
 
     def move_back(self) -> None:
         """
@@ -626,36 +559,6 @@ for annot_type in ANNOTATIONS:
 
 if not all(n == file_list_lengths[0] for n in file_list_lengths):
     sys.exit('ERROR: No. of files do not match!')
-
-# print('Validating images...')
-# everything_valid = True
-# for name, img in image_list.items():
-#     print(f'  {name}... ', end='')
-#     columns_are_valid = img.validate_columns()
-#     file_count_is_valid = img.validate_file_count()
-#     horizontal_alignment_is_valid = img.validate_horizontal_alignment()
-#     if columns_are_valid and file_count_is_valid and horizontal_alignment_is_valid:
-#         print('ok')
-#     else:
-#         print('NOT OK')
-#         everything_valid = False
-#         if not columns_are_valid:
-#             for col, reason in img.get_invalid_columns():
-#                 print(f'  Column {col}: {reason}')
-#         if not file_count_is_valid:
-#             print(f'  Number of annotation files differ:')
-#             for col, count in img.get_file_counts():
-#                 print(f'    Column {col}: {count} files')
-#         if not horizontal_alignment_is_valid:
-#             print(f'  Columns do not horizontally align (width: {img.col_width}):')
-#             for col, xpos in img.get_horizontal_alignment():
-#                 print(f'    Column {col} starts at {xpos}')
-#
-# if not everything_valid:
-#     sys.exit(
-#         f'ERROR: Could not assemble images properly! Are files missing?'
-#         f'Is the crop width {args.crop_width} correct?'
-#     )
 
 print(
     f'\n  Found {len(image_list)} image(s):',
