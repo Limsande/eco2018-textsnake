@@ -84,9 +84,6 @@ def visualize_selection(image_list, selected_locations):
     # Save the figures if a) this is no dry run, or b) we have no gui
     do_save_figs = not args.dry_run or not gui_present
 
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Rectangle, Patch
-
     if do_save_figs:
         if not os.path.isdir('./vis'):
             try:
