@@ -67,14 +67,9 @@ def visualize_selection(image_list, selected_locations):
     import matplotlib
     gui_present = True
     if not os.environ.get('DISPLAY', None):
-        # Either on Windows or no GUI. Try to plot with current interpreter. If
-        # this fails, we have no gui.
-        probe = "import matplotlib.pyplot as plt; import sys\ntry: plt.figure()\nexcept: sys.exit(1)"
-        cmd = f'{sys.executable} -c "{probe}"'
-        if os.system(cmd) != 0:
-            # No GUI. Use backend "agg" for PNG files
-            matplotlib.use('agg')
-            gui_present = False
+        # No GUI. Use backend "agg" for PNG files
+        matplotlib.use('agg')
+        gui_present = False
 
     # Normally, in a dry run we would show the plots instead of saving them.
     # But if we have no gui, save them nonetheless.
