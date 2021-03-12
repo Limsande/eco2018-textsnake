@@ -101,9 +101,6 @@ def visualize_selection(image_list, selected_locations):
 
         fig, ax = plt.subplots(1)
 
-        # FIXME
-        # plt.title(img)
-
         plt.axis('scaled')
         plt.xlim(0, 5000)
         plt.ylim(0, img_height)
@@ -112,6 +109,9 @@ def visualize_selection(image_list, selected_locations):
         ax.xaxis.set_label_position('top')
         plt.xlabel('x')
         plt.ylabel('y')
+
+        # pad to compensate for x tick labels on top
+        plt.title(img, pad=40)
 
         for x in selected_locations[img]['test']:
             ax.add_patch(Rectangle(
