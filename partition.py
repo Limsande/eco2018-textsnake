@@ -61,7 +61,33 @@ def get_metadata_from_filename(file_name: str) -> namedtuple:
 
 
 def visualize_selection(image_list, selected_locations):
-    if not args.dry_run:
+    # First, detect if we're running in a gui-less environment. In this case,
+    # we have to choose an appropriate backend and can only save the plots to
+    # file.
+    import matplotlib
+    gui_present = True
+    if not os.environ.get('DISPLAY', None):
+        # Either on Windows or no GUI. Try to plot with current interpreter. If
+        # this fails, we have no gui.
+        probe = "import matplotlib.pyplot as plt; import sys\ntry: plt.figure()\nexcept: sys.exit(1)"
+        cmd = f'{sys.executable} -c "{probe}"'
+        if os.system(cmd) != 0:
+            # No GUI. Use backend "agg" for PNG files
+            matplotlib.use('agg')
+            gui_present = False
+
+    # Normally, in a dry run we would show the plots instead of saving them.
+    # But if we have no gui, save them nonetheless.
+    if args.dry_run and not gui_present:
+        print(f"Running in a gui-less environment. Saving visualization to ./vis.")
+
+    # Save the figures if a) this is no dry run, or b) we have no gui
+    do_save_figs = not args.dry_run or not gui_present
+
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle, Patch
+
+    if do_save_figs:
         if not os.path.isdir('./vis'):
             try:
                 os.mkdir('./vis')
@@ -122,10 +148,11 @@ def visualize_selection(image_list, selected_locations):
                 Patch(color='green', label='Training'),
                 Patch(color='blue', label='Validation'),
                 Patch(color='orange', label='Test')
-            ]
+            ],
+            labels=['Training', 'Validation', 'Test']
         )
 
-        if args.dry_run:
+        if not do_save_figs:
             plt.show()
         else:
             try:
@@ -134,7 +161,7 @@ def visualize_selection(image_list, selected_locations):
                 print(f'\nCould not save visualization: {e}. Skipping.', file=sys.stderr)
                 return
 
-    if not args.dry_run:
+    if do_save_figs:
         print('\nSaved visualization in ./vis')
 
 
