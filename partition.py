@@ -218,8 +218,7 @@ class Image:
             Label all columns in [start, start+n) with label.
             """
             n_selected = 0
-            interval = [i % self.n_cols for i in range(start, start + n)]
-            for i in interval:
+            for i in range(start, int(start + n)):
                 x = self._x_positions[i]
                 n_selected += self._cols[x].mark_as(label)
             return n_selected
@@ -229,7 +228,7 @@ class Image:
             Remove unlabelled columns in [start-col_width, end+col_width].
             """
             start = self._x_positions[start % self.n_cols]
-            end = self._x_positions[end % self.n_cols]
+            end = self._x_positions[int(end) % self.n_cols]
             n_removed = 0
             for x, col in self._cols.items():
                 if start - self.col_width <= x <= start or end <= x <= end + self.col_width:
@@ -252,25 +251,26 @@ class Image:
         # sizes as fraction of the number of actual selected columns, not of
         # the total number of columns.
         delta_x = self._x_positions[1] - self._x_positions[0]
-        removed_per_split = self.col_width / delta_x
+        n_to_remove_per_split = self.col_width / delta_x
         # * 2 because 2 gaps between 3 splits
-        n_val = round((self.n_cols - removed_per_split * 2) * val_split)
-        n_test = round((self.n_cols - removed_per_split * 2) * test_split)
-        n_train = round((self.n_cols - removed_per_split * 2) * (1 - val_split - test_split))
+        n_to_keep = self.n_cols - n_to_remove_per_split * 2
+        n_val = round(n_to_keep * val_split)
+        n_test = round(n_to_keep * test_split)
+        n_train = n_to_keep - n_val - n_test
 
-        stats = dict.fromkeys(['training', 'validation', 'test', 'ignore'], 0)
+        n_selected_crops_per_split = dict.fromkeys(['training', 'validation', 'test', 'ignore'], 0)
 
         # Place patches in arbitrary order
         start = 0
         for n, label in random.sample(list(zip([n_train, n_val, n_test], ['training', 'validation', 'test'])), k=3):
             # Mark patch
-            stats[label] += _select(start, n, label)
+            n_selected_crops_per_split[label] += _select(start, n, label)
             # Remove columns overlapping this patch
-            stats['ignore'] += _remove_overlaps(start, start + n - 1)
+            n_selected_crops_per_split['ignore'] += _remove_overlaps(start, start + n - 1)
             # Next patch starts at next unlabelled column
             start = _next_unlabelled_col(start)
 
-        return stats
+        return n_selected_crops_per_split
 
     def get_labels(self) -> {int: str}:
         """
