@@ -50,7 +50,7 @@ optional arguments:
   -h, --help            show this help message and exit
   -y, --yes             Assume answer "yes" for all questions
   --dry-run             Only simulate the process, don't actually touch anything
-  --vis                 Create visualization of selection in ./vis
+  --vis                 Create visualization of selection in ./vis (requires matplotlib)
   -r INT, --random-seed INT
                         Seed for the random number generator
 

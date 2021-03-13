@@ -479,7 +479,7 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--vis',
         action='store_true',
-        help='Create visualization of selection in ./vis'
+        help='Create visualization of selection in ./vis (requires matplotlib)'
     )
     parser.add_argument(
         '-r', '--random-seed',
